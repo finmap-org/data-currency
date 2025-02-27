@@ -81,6 +81,7 @@ jobs:
             map({(.key): .value[$currency]}) |
             add' exchangeRates.json > "${currency}perUSD.json"
         done
+        rm exchangeRates.json
 
     - name: Merge
       run: |
