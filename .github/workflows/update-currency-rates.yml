@@ -58,20 +58,10 @@ jobs:
           exit 1
         fi
 
-    - name: Transform RUBperUSD.JSON to the required format
-      run: |
-        jq '
-          # Create rates object from history.data array
-          {rates: (.history.data | reduce .[] as $item ({}; 
-            # Use first element as date and last element as CLOSE price
-            . + {($item[0]): {"RUB": $item[4]}}
-          ))}
-        ' RUBperUSD.json.TMP > RUBperUSD.json
-
-    - name: Other currencies. Get exchange rates for new dates
+    - name: Other currencies. Get exchange rates
       run: |
         response_code=$(curl --silent \
-          --output "newRates.json.TMP" \
+          --output "exchangeRates.json" \
           --write-out "%{http_code}" \
           --user-agent "${{ env.CI_USER_AGENT }}" \
           "https://api.frankfurter.dev/v1/${START_DATE}..?base=${BASE_CURRENCY}&symbols=${CURRENCY_LIST}")
@@ -80,54 +70,38 @@ jobs:
           exit 1
         fi
 
-    - name: Merge new rates with existing data
+    - name: Convert into the required format
       run: |
-        # Create backup of existing file
-        cp data/currency/exchangeRates.json exchangeRates.backup.json
+        jq '.history.data[] | { (.[0]): .[4] }' RUBperUSD.json.TMP | jq -s 'add' > RUBperUSD.json
+        IFS=',' read -ra currency_list <<< "${CURRENCY_LIST}"
+        for currency in "${currency_list[@]}"; do
+          jq --arg currency "$currency" \
+            '.rates | 
+            to_entries |
+            map({(.key): .value[$currency]}) |
+            add' exchangeRates.json > "${currency}perUSD.json"
+        done
 
-        # Merge existing rates with new rates and RUB rates
-        jq -s '
-          # Get the existing data
-          .[0] as $existing |
-          # Get the new rates
-          .[1] as $new |
-          # Get the RUB rates
-          .[2] as $rub |
-          
-          # Start with the existing data structure
-          $existing * {
-            # Merge rates objects
-            rates: (
-              ($existing.rates + $new.rates) as $merged |
-              # Add RUB rates where available
-              $merged | with_entries(
-                .value += if $rub.rates[.key] then
-                  $rub.rates[.key]
-                else
-                  {}
-                end
-              )
-            )
-          }
-        ' exchangeRates.backup.json newRates.json.TMP RUBperUSD.json > exchangeRates.json.TMP
-        
-        # Validate the merged file is valid JSON and has content
-        if jq empty exchangeRates.json.TMP 2>/dev/null; then
-          if [ -s exchangeRates.json.TMP ]; then
-            mv exchangeRates.json.TMP data/currency/exchangeRates.json
+    - name: Merge
+      run: |
+        for datafile in ./*.json; do
+          filename=$(basename $datafile)
+          if [ -f "marketdata/${filename}" ]; then
+            cp "marketdata/${filename}" "${filename}.TMP"
+            jq -s 'add' "${filename}.TMP" "${filename}" > "marketdata/${filename}"
           else
-            echo "Error: Generated file is empty"
-            exit 1
+            cp "${filename}" "marketdata/${filename}"
           fi
-        else
-          echo "Error: Generated file is not valid JSON"
-          exit 1
-        fi
+        done
+    
+    - name: Cleanup
+      run: |
+        rm ./*.json ./*.json.TMP
 
     - name: Commit and push changes
       run: |
         git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
         git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
-        git add data/currency/*
+        git add marketdata/*
         git commit -a -m "${{ env.CI_COMMIT_MESSAGE }}"
         git push
