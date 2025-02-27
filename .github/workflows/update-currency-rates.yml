@@ -1,0 +1,133 @@
+name: 'Update Currency Exchange Rates'
+
+on:
+  schedule:
+    - cron: '40 00 * * 2-6'
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date'
+        required: true
+        type: string
+        default: '2025-02-10'
+      currency_list:
+        required: true
+        type: string
+        default: 'EUR,GBP,TRY'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env:
+      CI_COMMIT_AUTHOR: github-actions[bot]
+      CI_COMMIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      CI_COMMIT_MESSAGE: Update Currency Exchange Rates
+      CI_URL: https://iss.moex.com/iss/history/engines/currency/markets/index/securities
+      CI_USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Read inputs
+      run: |
+        if [ -z "${{ inputs.start_date }}" ]; then
+          START_DATE=$(date --utc -d 'yesterday' +%Y-%m-%d)
+          BASE_CURRENCY="USD"
+          CURRENCY_LIST="EUR,GBP,TRY"
+        else
+          START_DATE="${{ inputs.start_date }}"
+          BASE_CURRENCY="USD"
+          CURRENCY_LIST="${{ inputs.currency_list }}"
+        fi
+        echo "START_DATE=$START_DATE" >> $GITHUB_ENV
+        echo "BASE_CURRENCY=$BASE_CURRENCY" >> $GITHUB_ENV
+        echo "CURRENCY_LIST=$CURRENCY_LIST" >> $GITHUB_ENV
+
+    - name: RUB per USD. Get exchange rates
+      run: |
+        response_code=$(curl --silent \
+          --output "RUBperUSD.json.TMP" \
+          --write-out "%{http_code}" \
+          --user-agent "${{ env.CI_USER_AGENT }}" \
+          "${{ env.CI_URL }}/USDFIXME.json?iss.meta=on&history.columns=TRADEDATE,OPEN,HIGH,LOW,CLOSE&sort_column=TRADEDATE&sort_order=asc&FROM=${START_DATE}")
+        if [ "${response_code}" -ne 200 ]; then
+          echo "Request failed with response code: ${response_code}"
+          exit 1
+        fi
+
+    - name: Transform RUBperUSD.JSON to the required format
+      run: |
+        jq '
+          # Create rates object from history.data array
+          {rates: (.history.data | reduce .[] as $item ({}; 
+            # Use first element as date and last element as CLOSE price
+            . + {($item[0]): {"RUB": $item[4]}}
+          ))}
+        ' RUBperUSD.json.TMP > RUBperUSD.json
+
+    - name: Other currencies. Get exchange rates for new dates
+      run: |
+        response_code=$(curl --silent \
+          --output "newRates.json.TMP" \
+          --write-out "%{http_code}" \
+          --user-agent "${{ env.CI_USER_AGENT }}" \
+          "https://api.frankfurter.dev/v1/${START_DATE}..?base=${BASE_CURRENCY}&symbols=${CURRENCY_LIST}")
+        if [ "${response_code}" -ne 200 ]; then
+          echo "Request failed with response code: ${response_code}"
+          exit 1
+        fi
+
+    - name: Merge new rates with existing data
+      run: |
+        # Create backup of existing file
+        cp data/currency/exchangeRates.json exchangeRates.backup.json
+
+        # Merge existing rates with new rates and RUB rates
+        jq -s '
+          # Get the existing data
+          .[0] as $existing |
+          # Get the new rates
+          .[1] as $new |
+          # Get the RUB rates
+          .[2] as $rub |
+          
+          # Start with the existing data structure
+          $existing * {
+            # Merge rates objects
+            rates: (
+              ($existing.rates + $new.rates) as $merged |
+              # Add RUB rates where available
+              $merged | with_entries(
+                .value += if $rub.rates[.key] then
+                  $rub.rates[.key]
+                else
+                  {}
+                end
+              )
+            )
+          }
+        ' exchangeRates.backup.json newRates.json.TMP RUBperUSD.json > exchangeRates.json.TMP
+        
+        # Validate the merged file is valid JSON and has content
+        if jq empty exchangeRates.json.TMP 2>/dev/null; then
+          if [ -s exchangeRates.json.TMP ]; then
+            mv exchangeRates.json.TMP data/currency/exchangeRates.json
+          else
+            echo "Error: Generated file is empty"
+            exit 1
+          fi
+        else
+          echo "Error: Generated file is not valid JSON"
+          exit 1
+        fi
+
+    - name: Commit and push changes
+      run: |
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add data/currency/*
+        git commit -a -m "${{ env.CI_COMMIT_MESSAGE }}"
+        git push
