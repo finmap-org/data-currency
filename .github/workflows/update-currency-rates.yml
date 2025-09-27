@@ -72,14 +72,14 @@ jobs:
 
     - name: Convert into the required format
       run: |
-        jq '.history.data[] | { (.[0]): .[4] }' RUBperUSD.json.TMP | jq -s 'add' > RUBperUSD.json
+        jq '.history.data[] | { (.[0]): .[4] }' RUBperUSD.json.TMP | jq -s 'add | to_entries | sort_by(.key) | from_entries' > RUBperUSD.json
         IFS=',' read -ra currency_list <<< "${CURRENCY_LIST}"
         for currency in "${currency_list[@]}"; do
           jq --arg currency "$currency" \
             '.rates | 
             to_entries |
             map({(.key): .value[$currency]}) |
-            add' exchangeRates.json > "${currency}perUSD.json"
+            add | to_entries | sort_by(.key) | from_entries' exchangeRates.json > "${currency}perUSD.json"
         done
         rm exchangeRates.json
 
@@ -89,7 +89,7 @@ jobs:
           filename=$(basename $datafile)
           if [ -f "marketdata/${filename}" ]; then
             cp "marketdata/${filename}" "${filename}.TMP"
-            jq -s 'add' "${filename}.TMP" "${filename}" > "marketdata/${filename}"
+            jq -s 'add | to_entries | sort_by(.key) | from_entries' "${filename}.TMP" "${filename}" > "marketdata/${filename}"
           else
             cp "${filename}" "marketdata/${filename}"
           fi
