@@ -47,6 +47,7 @@ jobs:
         echo "CURRENCY_LIST=$CURRENCY_LIST" >> $GITHUB_ENV
 
     - name: RUB per USD. Get exchange rates
+      continue-on-error: true
       run: |
         response_code=$(curl --silent \
           --output "RUBperUSD.json.TMP" \
@@ -107,3 +108,4 @@ jobs:
         git commit -a -m "${{ env.CI_COMMIT_MESSAGE }}"
 
         git push
+
