@@ -72,6 +72,7 @@ jobs:
         fi
 
     - name: Convert into the required format
+      continue-on-error: true
       run: |
         jq '.history.data[] | { (.[0]): .[4] }' RUBperUSD.json.TMP | jq -s 'add | to_entries | sort_by(.key) | from_entries' > RUBperUSD.json
         IFS=',' read -ra currency_list <<< "${CURRENCY_LIST}"
@@ -108,4 +109,5 @@ jobs:
         git commit -a -m "${{ env.CI_COMMIT_MESSAGE }}"
 
         git push
+
 
